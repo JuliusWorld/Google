@@ -1,0 +1,744 @@
+
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JuliusWorld</title>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+<style>
+*{box-sizing:border-box}
+body{
+ margin:0;background:#101321;color:white;
+ font-family:Arial,sans-serif;
+}
+header{
+ padding:22px;background:#1a2035;
+ display:flex;justify-content:space-between;
+ align-items:center;flex-wrap:wrap;gap:12px;
+}
+header h1{margin:0;color:#66a5ff}
+main{max-width:1100px;margin:auto;padding:20px}
+.card{
+ background:#202a43;border-radius:15px;
+ padding:20px;text-align:center;
+}
+.games{
+ display:grid;
+ grid-template-columns:repeat(auto-fit,minmax(210px,1fr));
+ gap:18px;
+}
+.gameIcon{font-size:55px}
+button{
+ border:0;border-radius:9px;padding:12px 18px;
+ background:#3478ef;color:white;
+ font-weight:bold;cursor:pointer;margin:4px;
+}
+button:hover{background:#5595ff}
+button:disabled{opacity:.5;cursor:not-allowed}
+input{
+ padding:12px;border-radius:8px;
+ border:1px solid #53688f;background:#101a30;
+ color:white;max-width:100%;
+}
+#game,#lobby{
+ display:none;background:#202a43;
+ padding:20px;border-radius:15px;margin-top:22px;
+ text-align:center;
+}
+canvas{
+ background:#080d18;border:2px solid #53688f;
+ border-radius:10px;max-width:100%;
+ touch-action:none;
+}
+#world{
+ display:grid;grid-template-columns:repeat(12,26px);
+ gap:3px;justify-content:center;margin:20px auto;
+}
+.block{width:26px;height:26px;background:#31465d;cursor:pointer}
+#players p{background:#263957;padding:8px;border-radius:7px}
+#status{color:#9dc8ff;margin:12px}
+.small{color:#aab8d0;font-size:13px}
+.hidden{display:none!important}
+</style>
+</head>
+
+<body>
+
+<header>
+<h1>🌎 JuliusWorld</h1>
+<span>🎮 Dein Game Center</span>
+</header>
+
+<main>
+
+<h2>Willkommen in JuliusWorld!</h2>
+<p>Spiele alleine oder gemeinsam mit deinen Freunden.</p>
+
+<section class="card" id="multiplayer">
+<h2>🌐 Multiplayer</h2>
+
+<input id="playerName" maxlength="16"
+placeholder="Dein Spielername">
+
+<br><br>
+
+<input id="roomCode" maxlength="6"
+placeholder="Raumcode">
+
+<br><br>
+
+<button onclick="createRoom()">Raum erstellen</button>
+<button onclick="joinRoom()">Beitreten</button>
+<button onclick="leaveRoom()">Verlassen</button>
+
+<p id="connection">Nicht verbunden</p>
+<p id="roomInfo"></p>
+
+<div id="players"></div>
+<button id="startRoom" onclick="startRoomGame()" class="hidden">
+Spiel für alle starten
+</button>
+</section>
+
+<section id="menu">
+<h2>🎮 Spiele auswählen</h2>
+<div class="games">
+
+<div class="card">
+<div class="gameIcon">🔫</div>
+<h2>Battle Arena</h2>
+<p>Überlebe die Arena!</p>
+<button onclick="startGame('arena')">Spielen</button>
+</div>
+
+<div class="card">
+<div class="gameIcon">🧱</div>
+<h2>Block World</h2>
+<p>Baue deine eigene Welt.</p>
+<button onclick="startGame('blocks')">Spielen</button>
+</div>
+
+<div class="card">
+<div class="gameIcon">🚀</div>
+<h2>Space Mystery</h2>
+<p>Finde den Verräter!</p>
+<button onclick="startGame('space')">Spielen</button>
+</div>
+
+<div class="card">
+<div class="gameIcon">🌲</div>
+<h2>Pixel Survival</h2>
+<p>Sammle Ressourcen.</p>
+<button onclick="startGame('survival')">Spielen</button>
+</div>
+
+<div class="card">
+<div class="gameIcon">🐍</div>
+<h2>Snake</h2>
+<p>Erreiche einen Highscore.</p>
+<button onclick="startGame('snake')">Spielen</button>
+</div>
+
+<div class="card">
+<div class="gameIcon">🏓</div>
+<h2>Pong</h2>
+<p>Spiele gegen den Computer.</p>
+<button onclick="startGame('pong')">Spielen</button>
+</div>
+
+</div>
+</section>
+
+<section id="game">
+<h2 id="gameTitle"></h2>
+<p id="status"></p>
+<div id="content"></div>
+<button onclick="stopGame()">Zurück zum Menü</button>
+</section>
+
+</main>
+
+<script>
+
+// =====================================
+// 1. SUPABASE EINSTELLUNGEN
+// =====================================
+
+const SUPABASE_URL = "DEINE_PROJECT_URL";
+const SUPABASE_KEY = "DEIN_PUBLISHABLE_KEY";
+
+const db = window.supabase.createClient(
+ SUPABASE_URL,
+ SUPABASE_KEY
+);
+
+let channel=null;
+let playerId=crypto.randomUUID();
+let room=null;
+let host=false;
+let currentGame=null;
+let players={};
+let remoteData={};
+let gameTimer=null;
+let lastSend=0;
+let myX=200,myY=200;
+let keys={};
+let gameRunning=false;
+
+function name(){
+ return document.getElementById("playerName").value.trim()
+ .slice(0,16)||"Spieler";
+}
+
+function send(event,payload){
+ if(!channel)return;
+
+ channel.send({
+  type:"broadcast",
+  event:event,
+  payload:{...payload,id:playerId}
+ });
+}
+
+// =====================================
+// 2. RÄUME UND MULTIPLAYER
+// =====================================
+
+async function createRoom(){
+ const code=Math.random().toString(36)
+ .substring(2,8).toUpperCase();
+
+ document.getElementById("roomCode").value=code;
+ host=true;
+
+ await connect(code);
+}
+
+async function joinRoom(){
+ const code=document.getElementById("roomCode")
+ .value.trim().toUpperCase();
+
+ if(!/^[A-Z0-9]{6}$/.test(code)){
+  alert("Bitte einen gültigen Raumcode eingeben!");
+  return;
+ }
+
+ host=false;
+ await connect(code);
+}
+
+async function connect(code){
+ await leaveRoom();
+
+ room=code;
+
+ channel=db.channel("jw-room-"+code,{
+  config:{
+   presence:{key:playerId},
+   broadcast:{self:false}
+  }
+ });
+
+ channel.on("presence",{event:"sync"},updatePlayers);
+
+ channel.on("broadcast",{event:"position"},({payload})=>{
+  if(payload.id!==playerId)players[payload.id]=payload;
+ });
+
+ channel.on("broadcast",{event:"game-start"},({payload})=>{
+  if(!host)startGame(payload.game,false);
+ });
+
+ channel.on("broadcast",{event:"block-change"},({payload})=>{
+  if(payload.id!==playerId)applyBlock(payload.index,payload.active);
+ });
+
+ channel.on("broadcast",{event:"task-done"},({payload})=>{
+  if(payload.id!==playerId){
+   remoteData.tasks=(remoteData.tasks||0)+1;
+   updateSpaceStatus();
+  }
+ });
+
+ channel.on("broadcast",{event:"resource"},({payload})=>{
+  if(payload.id!==playerId){
+   remoteData.resources=payload.resources;
+   updateSurvivalStatus();
+  }
+ });
+
+ channel.on("broadcast",{event:"snake-update"},({payload})=>{
+  if(payload.id!==playerId)players[payload.id]=payload;
+ });
+
+ channel.on("broadcast",{event:"pong-update"},({payload})=>{
+  if(payload.id!==playerId)remoteData.pongY=payload.y;
+ });
+
+ channel.on("broadcast",{event:"game-event"},({payload})=>{
+  if(payload.id!==playerId)remoteData[payload.key]=payload.value;
+ });
+
+ channel.subscribe(async state=>{
+  if(state!=="SUBSCRIBED")return;
+
+  await channel.track({
+   id:playerId,
+   name:name(),
+   host:host
+  });
+
+  document.getElementById("connection").textContent=
+   "🟢 Verbunden!";
+
+  document.getElementById("roomInfo").textContent=
+   "Raumcode: "+room;
+
+  document.getElementById("startRoom").classList.toggle(
+   "hidden",!host
+  );
+
+  updatePlayers();
+ });
+}
+
+function updatePlayers(){
+ if(!channel)return;
+
+ const all=Object.values(channel.presenceState()).flat();
+
+ const unique=[...new Map(all.map(p=>[p.id,p])).values()];
+
+ document.getElementById("players").innerHTML=
+  "<h3>Spieler ("+unique.length+"/10)</h3>";
+
+ unique.forEach(p=>{
+  const line=document.createElement("p");
+  line.textContent=(p.host?"👑 ":"🟢 ")+p.name;
+  document.getElementById("players").appendChild(line);
+ });
+
+ document.getElementById("startRoom").disabled=
+  unique.length>10;
+}
+
+async function leaveRoom(){
+ if(channel){
+  await db.removeChannel(channel);
+ }
+
+ channel=null;
+ room=null;
+ host=false;
+ players={};
+ remoteData={};
+
+ document.getElementById("connection").textContent=
+  "Nicht verbunden";
+
+ document.getElementById("roomInfo").textContent="";
+ document.getElementById("players").innerHTML="";
+ document.getElementById("startRoom").classList.add("hidden");
+}
+
+function startRoomGame(){
+ if(!host||!channel)return;
+ const game=prompt(
+  "Welches Spiel? arena, blocks, space, survival, snake oder pong"
+ );
+ const valid=["arena","blocks","space","survival","snake","pong"];
+
+ if(!valid.includes(game))return;
+
+ send("game-start",{game:game});
+ startGame(game,false);
+}
+
+// =====================================
+// 3. SPIELE VERWALTEN
+// =====================================
+
+function stopGame(){
+ if(gameTimer)clearInterval(gameTimer);
+ gameTimer=null;
+ gameRunning=false;
+
+ document.getElementById("game").style.display="none";
+ document.getElementById("menu").style.display="block";
+ currentGame=null;
+}
+
+function startGame(game,broadcast=true){
+ if(gameTimer)clearInterval(gameTimer);
+
+ gameTimer=null;
+ currentGame=game;
+ gameRunning=true;
+
+ document.getElementById("menu").style.display="none";
+ document.getElementById("game").style.display="block";
+
+ document.getElementById("gameTitle").textContent=
+  ({
+   arena:"🔫 Battle Arena",
+   blocks:"🧱 Block World",
+   space:"🚀 Space Mystery",
+   survival:"🌲 Pixel Survival",
+   snake:"🐍 Snake",
+   pong:"🏓 Pong"
+  })[game];
+
+ document.getElementById("content").innerHTML="";
+ document.getElementById("status").textContent=
+  channel?"🌐 Multiplayer verbunden":"🎮 Einzelspieler";
+
+ remoteData={};
+
+ if(channel&&broadcast)send("game-start",{game:game});
+
+ if(game==="arena")arena();
+ if(game==="blocks")blocks();
+ if(game==="space")space();
+ if(game==="survival")survival();
+ if(game==="snake")snake();
+ if(game==="pong")pong();
+}
+
+// =====================================
+// 4. SPIELERPOSITIONEN
+// =====================================
+
+function movement(){
+ if(keys.w||keys.ArrowUp)myY-=3;
+ if(keys.s||keys.ArrowDown)myY+=3;
+ if(keys.a||keys.ArrowLeft)myX-=3;
+ if(keys.d||keys.ArrowRight)myX+=3;
+
+ myX=Math.max(12,Math.min(588,myX));
+ myY=Math.max(12,Math.min(388,myY));
+
+ if(channel&&Date.now()-lastSend>100){
+  send("position",{x:myX,y:myY,name:name()});
+  lastSend=Date.now();
+ }
+}
+
+window.addEventListener("keydown",e=>{
+ keys[e.key.toLowerCase()]=true;
+});
+
+window.addEventListener("keyup",e=>{
+ keys[e.key.toLowerCase()]=false;
+});
+
+// =====================================
+// 5. BATTLE ARENA
+// =====================================
+
+function arena(){
+ const c=document.createElement("canvas");
+ c.width=600;c.height=400;
+ document.getElementById("content").appendChild(c);
+
+ const ctx=c.getContext("2d");
+ myX=200;myY=200;
+
+ gameTimer=setInterval(()=>{
+  movement();
+
+  ctx.fillStyle="#193c29";
+  ctx.fillRect(0,0,600,400);
+
+  ctx.strokeStyle="#315b43";
+  for(let i=0;i<600;i+=40)ctx.strokeRect(i,0,40,400);
+
+  ctx.fillStyle="#55aaff";
+  ctx.fillRect(myX-12,myY-12,24,24);
+
+  ctx.fillStyle="white";
+  ctx.fillText(name(),myX-15,myY-20);
+
+  Object.values(players).forEach(p=>{
+   if(typeof p.x!=="number"||typeof p.y!=="number")return;
+   ctx.fillStyle="#ffcc44";
+   ctx.fillRect(p.x-12,p.y-12,24,24);
+   ctx.fillStyle="white";
+   ctx.fillText(p.name,p.x-20,p.y-20);
+  });
+
+ },30);
+}
+
+// =====================================
+// 6. BLOCK WORLD
+// =====================================
+
+let blockData=new Set();
+
+function blocks(){
+ const world=document.createElement("div");
+ world.id="world";
+ document.getElementById("content").appendChild(world);
+
+ blockData.clear();
+
+ for(let i=0;i<144;i++){
+  const b=document.createElement("div");
+  b.className="block";
+
+  b.onclick=()=>{
+   const active=!blockData.has(i);
+   applyBlock(i,active);
+   if(channel)send("block-change",{index:i,active:active});
+  };
+
+  world.appendChild(b);
+ }
+}
+
+function applyBlock(index,active){
+ if(index<0||index>=144)return;
+
+ const world=document.getElementById("world");
+ if(!world)return;
+
+ const b=world.children[index];
+ if(!b)return;
+
+ if(active){
+  blockData.add(index);
+  b.style.background="#4ba65c";
+ }else{
+  blockData.delete(index);
+  b.style.background="#31465d";
+ }
+}
+
+// =====================================
+// 7. SPACE MYSTERY
+// =====================================
+
+let tasksDone=0;
+
+function updateSpaceStatus(){
+ document.getElementById("status").textContent=
+  "Aufgaben erledigt: "+tasksDone+
+  (channel?" | Multiplayer":"");
+}
+
+function space(){
+ tasksDone=0;
+
+ const area=document.createElement("div");
+ area.innerHTML=`
+ <h3>🚀 Raumschiff-Aufgaben</h3>
+ <p>Erledige die Aufgaben!</p>
+ <button id="task1">Repariere den Motor</button>
+ <button id="task2">Aktiviere den Computer</button>
+ <button id="task3">Prüfe die Energie</button>
+ `;
+
+ document.getElementById("content").appendChild(area);
+
+ [1,2,3].forEach(i=>{
+  area.querySelector("#task"+i).onclick=e=>{
+   e.target.disabled=true;
+   tasksDone++;
+   updateSpaceStatus();
+
+   if(channel)send("task-done",{task:i});
+
+   if(tasksDone>=3){
+    document.getElementById("status").textContent=
+     "🏆 Du hast deine Aufgaben erledigt!";
+   }
+  };
+ });
+}
+
+// =====================================
+// 8. PIXEL SURVIVAL
+// =====================================
+
+let resources={wood:0,stone:0};
+
+function updateSurvivalStatus(){
+ const r=remoteData.resources||resources;
+ document.getElementById("status").textContent=
+  "🪵 Holz: "+r.wood+" | 🪨 Stein: "+r.stone;
+}
+
+function survival(){
+ resources={wood:0,stone:0};
+ myX=200;myY=180;
+
+ const c=document.createElement("canvas");
+ c.width=500;c.height=350;
+ document.getElementById("content").appendChild(c);
+ const ctx=c.getContext("2d");
+
+ let objects=Array.from({length:15},()=>({
+  x:Math.random()*450+20,
+  y:Math.random()*300+20,
+  type:Math.random()>.5?"wood":"stone"
+ }));
+
+ gameTimer=setInterval(()=>{
+  movement();
+
+  ctx.fillStyle="#294a32";
+  ctx.fillRect(0,0,500,350);
+
+  objects.forEach((o,i)=>{
+   ctx.font="25px Arial";
+   ctx.fillText(o.type==="wood"?"🌳":"🪨",o.x,o.y);
+
+   if(Math.hypot(myX-o.x,myY-o.y)<25){
+    if(o.type==="wood")resources.wood++;
+    else resources.stone++;
+
+    objects.splice(i,1);
+
+    if(channel)send("resource",{
+     resources:resources
+    });
+   }
+  });
+
+  ctx.font="25px Arial";
+  ctx.fillText("🧍",myX-10,myY);
+
+  Object.values(players).forEach(p=>{
+   if(typeof p.x==="number"&&typeof p.y==="number"){
+    ctx.fillText("🟡",p.x-10,p.y);
+   }
+  });
+
+  updateSurvivalStatus();
+ },40);
+}
+
+// =====================================
+// 9. SNAKE
+// =====================================
+
+function snake(){
+ const c=document.createElement("canvas");
+ c.width=400;c.height=400;
+ document.getElementById("content").appendChild(c);
+
+ const ctx=c.getContext("2d");
+
+ let s=[{x:10,y:10}];
+ let dir={x:1,y:0};
+ let food={x:5,y:5};
+ let score=0,dead=false;
+
+ function control(e){
+  if(e.key==="ArrowUp"&&dir.y===0)dir={x:0,y:-1};
+  if(e.key==="ArrowDown"&&dir.y===0)dir={x:0,y:1};
+  if(e.key==="ArrowLeft"&&dir.x===0)dir={x:-1,y:0};
+  if(e.key==="ArrowRight"&&dir.x===0)dir={x:1,y:0};
+ }
+ window.addEventListener("keydown",control);
+
+ gameTimer=setInterval(()=>{
+  if(dead)return;
+
+  const h={
+   x:s[0].x+dir.x,
+   y:s[0].y+dir.y
+  };
+
+  if(h.x<0||h.y<0||h.x>=20||h.y>=20||
+   s.some(a=>a.x===h.x&&a.y===h.y)){
+   dead=true;
+   document.getElementById("status").textContent=
+    "Game Over! Punkte: "+score;
+   return;
+  }
+
+  s.unshift(h);
+
+  if(h.x===food.x&&h.y===food.y){
+   score++;
+   food={x:Math.floor(Math.random()*20),
+   y:Math.floor(Math.random()*20)};
+  }else s.pop();
+
+  ctx.fillStyle="#111";
+  ctx.fillRect(0,0,400,400);
+
+  ctx.fillStyle="lime";
+  s.forEach(a=>ctx.fillRect(a.x*20,a.y*20,18,18));
+
+  ctx.fillStyle="red";
+  ctx.fillRect(food.x*20,food.y*20,18,18);
+
+  document.getElementById("status").textContent=
+   "Punkte: "+score;
+
+ },130);
+}
+
+// =====================================
+// 10. PONG
+// =====================================
+
+function pong(){
+ const c=document.createElement("canvas");
+ c.width=600;c.height=350;
+ document.getElementById("content").appendChild(c);
+
+ const ctx=c.getContext("2d");
+
+ let y=140,cy=140,x=300,ballY=175;
+ let dx=4,dy=3,score=0;
+
+ gameTimer=setInterval(()=>{
+  if(keys.w)y-=5;
+  if(keys.s)y+=5;
+
+  y=Math.max(0,Math.min(280,y));
+
+  x+=dx;ballY+=dy;
+
+  if(ballY<8||ballY>342)dy*=-1;
+
+  if(x>570||x<30){
+   dx*=-1;
+   score++;
+  }
+
+  cy=Math.max(0,Math.min(280,ballY-35));
+
+  if(x<55&&Math.abs(ballY-y-35)<45)dx=Math.abs(dx);
+  if(x>545&&Math.abs(ballY-cy-35)<45)dx=-Math.abs(dx);
+
+  if(channel&&Date.now()-lastSend>100){
+   send("pong-update",{y:y});
+   lastSend=Date.now();
+  }
+
+  ctx.fillStyle="#080d18";
+  ctx.fillRect(0,0,600,350);
+
+  ctx.fillStyle="white";
+  ctx.fillRect(20,y,12,70);
+  ctx.fillRect(568,cy,12,70);
+
+  ctx.beginPath();
+  ctx.arc(x,ballY,8,0,7);
+  ctx.fill();
+
+  ctx.fillText("Punkte: "+score,260,20);
+
+ },25);
+}
+
+</script>
+</body>
+</html>
